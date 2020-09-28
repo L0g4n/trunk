@@ -1,0 +1,5 @@
+---
+source: tests/examples-yew.rs
+expression: filehash
+---
+f73de99e0be6203b

@@ -7,12 +7,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use async_std::task::spawn_blocking;
+use cargo_metadata::{Metadata, MetadataCommand, Package};
 use http_types::Url;
 use serde::Deserialize;
 use structopt::StructOpt;
 
-use crate::build::CargoMetadata;
 use crate::common::parse_public_url;
 
 /// Runtime config for the build system.
@@ -35,7 +36,13 @@ impl From<(CargoMetadata, ConfigOptsBuild)> for RtcBuild {
         Self {
             target: opts.target.unwrap_or_else(|| "index.html".into()),
             release: opts.release,
-            dist: opts.dist.unwrap_or_else(|| "dist".into()),
+            // Use a config defined value.
+            dist: opts.dist.unwrap_or_else(||
+                // Else fallback to the parent dir of the cargo target dir.
+                manifest.metadata.target_directory
+                    .parent().map(|path| path.join("dist"))
+                    // Else fallback to the "dist" dir of the CWD (this will practically never be hit).
+                    .unwrap_or_else(|| "dist".into())),
             manifest,
             public_url: opts.public_url.unwrap_or_else(|| "/".into()),
         }
@@ -423,5 +430,37 @@ impl ConfigOpts {
             (Some(_), Some(g)) => Some(g), // No meshing/merging. Only take the greater value.
         };
         greater
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+/// A wrapper around the cargo project's metadata.
+#[derive(Clone, Debug)]
+pub struct CargoMetadata {
+    /// The metadata parsed from the cargo project.
+    pub metadata: Metadata,
+    /// The metadata package info on this package.
+    pub package: Package,
+}
+
+impl CargoMetadata {
+    /// Get the project's cargo metadata of the CWD, or of the project specified by the given manifest path.
+    pub async fn new(manifest: &Option<PathBuf>) -> Result<Self> {
+        // Fetch the cargo project's metadata.
+        let mut cmd = MetadataCommand::new();
+        if let Some(manifest) = manifest.as_ref() {
+            cmd.manifest_path(manifest);
+        }
+        let metadata = spawn_blocking(move || cmd.exec()).await?;
+
+        // Get a handle to this project's package info.
+        let package = metadata
+            .root_package()
+            .cloned()
+            .ok_or_else(|| anyhow!("could not find root package of the target crate"))?;
+
+        Ok(Self { metadata, package })
     }
 }
